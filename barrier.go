@@ -22,7 +22,13 @@ type SequenceBarrier struct {
 
 func newSequenceBarrier(seqr Sequencer, wait WaitStrategy, deps []*Sequence) *SequenceBarrier {
 	b := &SequenceBarrier{seqr: seqr, cursor: seqr.Cursor(), deps: deps, wait: wait}
-	b.depFn = b.dependentMin
+	if len(deps) == 0 {
+		// Root consumers poll the cursor directly — no per-poll branch on
+		// len(deps) and one less call level in the spin loop.
+		b.depFn = b.cursor.Load
+	} else {
+		b.depFn = b.dependentMin
+	}
 	b.alertFn = b.alerted.Load
 	return b
 }
