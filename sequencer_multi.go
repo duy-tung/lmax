@@ -70,6 +70,7 @@ func (s *MultiProducerSequencer) Next(n int64) int64 {
 	if n < 1 {
 		panic("lmax: Next requires n >= 1")
 	}
+	backoff := int32(1)
 	for {
 		current := s.cursor.Load()
 		if !s.hasCapacity(n, current) {
@@ -78,6 +79,12 @@ func (s *MultiProducerSequencer) Next(n int64) int64 {
 		}
 		if s.cursor.CompareAndSwap(current, current+n) {
 			return current + n
+		}
+		// Lost the CAS: back off before re-reading so the losers don't
+		// keep hammering the cursor line while the winner publishes.
+		procYield(backoff)
+		if backoff < 16 {
+			backoff <<= 1
 		}
 	}
 }

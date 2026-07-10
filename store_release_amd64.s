@@ -17,3 +17,14 @@ TEXT ·asmStoreRel32(SB), NOSPLIT, $0-12
 	MOVL	v+8(FP), CX
 	MOVL	CX, (AX)
 	RET
+
+// func procYield(n int32)
+// PAUSE-based backoff spin, mirroring runtime.procyield: de-prioritizes the
+// spinning hyperthread and backs the core off the contended cache line.
+TEXT ·procYield(SB), NOSPLIT, $0-4
+	MOVL	n+0(FP), AX
+again:
+	PAUSE
+	SUBL	$1, AX
+	JNZ	again
+	RET

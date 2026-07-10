@@ -12,3 +12,7 @@ import "sync/atomic"
 func storeRelease64(a *atomic.Int64, v int64) { a.Store(v) }
 
 func storeRelease32(a *atomic.Int32, v int32) { a.Store(v) }
+
+// procYield backoff is a no-op on the fallback path (immediate retry —
+// the pre-backoff behavior); only the amd64 fast path has PAUSE.
+func procYield(n int32) {}
