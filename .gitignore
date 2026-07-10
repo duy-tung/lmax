@@ -1,0 +1,4 @@
+# Compiled test/benchmark binaries and profiles
+*.test
+*.prof
+*.out
