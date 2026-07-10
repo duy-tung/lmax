@@ -74,9 +74,16 @@ func (Yielding) WaitFor(seq int64, dependent func() int64, alerted func() bool) 
 			return 0, ErrAlerted
 		}
 		if spins > 0 {
+			// PAUSE between polls: eases coherence pressure on the cursor
+			// line so the producer's publishing store commits faster.
 			spins--
+			procYield(1)
 		} else {
+			// PAUSE-space the yields: with no other runnable goroutines
+			// Gosched returns immediately, and an unspaced yield loop turns
+			// into a futex/scheduler storm (visible in the SPSC profile).
 			runtime.Gosched()
+			procYield(64)
 		}
 	}
 }
