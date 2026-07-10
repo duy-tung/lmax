@@ -55,7 +55,12 @@ func (s *MultiProducerSequencer) hasCapacity(n, current int64) bool {
 	cached := s.cachedGate.Load()
 	if wrap > cached || cached > current {
 		min := minSeq(s.gating, current)
-		s.cachedGate.Store(min)
+		// Only store on change: an unconditional store from every producer
+		// on this path keeps the cachedGate line in Modified state bouncing
+		// between cores; skipping redundant stores lets it stay Shared.
+		if min != cached {
+			s.cachedGate.Store(min)
+		}
 		return wrap <= min
 	}
 	return true
