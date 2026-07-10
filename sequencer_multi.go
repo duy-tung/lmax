@@ -18,6 +18,7 @@ type MultiProducerSequencer struct {
 	mask       int64
 	shift      uint
 	wait       WaitStrategy
+	signal     bool // strategy parks waiters and needs SignalAll per publish
 	gating     []*Sequence
 	avail      []atomic.Int32
 }
@@ -34,6 +35,7 @@ func NewMultiProducerSequencer(capacity int64, wait WaitStrategy) *MultiProducer
 		mask:       capacity - 1,
 		shift:      log2(capacity),
 		wait:       wait,
+		signal:     needsSignal(wait),
 		avail:      make([]atomic.Int32, capacity),
 	}
 	for i := range s.avail {
@@ -94,7 +96,9 @@ func (s *MultiProducerSequencer) Publish(lo, hi int64) {
 	for seq := lo; seq <= hi; seq++ {
 		s.avail[seq&s.mask].Store(int32(seq >> s.shift))
 	}
-	s.wait.SignalAll()
+	if s.signal {
+		s.wait.SignalAll()
+	}
 }
 
 func (s *MultiProducerSequencer) HighestPublished(lo, hi int64) int64 {

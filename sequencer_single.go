@@ -11,6 +11,7 @@ type SingleProducerSequencer struct {
 	cursor   *Sequence
 	capacity int64
 	wait     WaitStrategy
+	signal   bool // strategy parks waiters and needs SignalAll per publish
 	gating   []*Sequence
 
 	next       int64 // highest claimed; producer goroutine only
@@ -26,6 +27,7 @@ func NewSingleProducerSequencer(capacity int64, wait WaitStrategy) *SingleProduc
 		cursor:     NewSequence(),
 		capacity:   capacity,
 		wait:       wait,
+		signal:     needsSignal(wait),
 		next:       InitialSequence,
 		cachedGate: InitialSequence,
 	}
@@ -78,7 +80,9 @@ func (s *SingleProducerSequencer) TryNext(n int64) (int64, bool) {
 // store is the release edge that makes the slot writes visible to consumers.
 func (s *SingleProducerSequencer) Publish(lo, hi int64) {
 	s.cursor.Store(hi)
-	s.wait.SignalAll()
+	if s.signal {
+		s.wait.SignalAll()
+	}
 }
 
 // HighestPublished is trivially hi: with one producer the cursor alone proves

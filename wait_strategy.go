@@ -22,6 +22,23 @@ type WaitStrategy interface {
 	SignalAll()
 }
 
+// NonSignaling is implemented by strategies whose SignalAll is a no-op.
+// Sequencers skip the per-publish SignalAll interface call for them — a
+// measurable saving, since the dynamic call sits in the hottest function.
+// Polling strategies (spin/yield/sleep) should implement it returning true;
+// strategies that park waiters must not. Unknown strategies are treated
+// conservatively as needing signals.
+type NonSignaling interface {
+	NoSignalNeeded() bool
+}
+
+func needsSignal(ws WaitStrategy) bool {
+	if ns, ok := ws.(NonSignaling); ok {
+		return !ns.NoSignalNeeded()
+	}
+	return true
+}
+
 // BusySpin spins as hard as possible. Lowest latency, burns a core per
 // waiter, and never yields to the Go scheduler — only use it when
 // GOMAXPROCS comfortably exceeds the number of spinning goroutines.
@@ -136,3 +153,12 @@ func (b *Blocking) SignalAll() {
 	b.cond.Broadcast()
 	b.mu.Unlock()
 }
+
+// NoSignalNeeded reports that BusySpin never blocks and needs no signal.
+func (BusySpin) NoSignalNeeded() bool { return true }
+
+// NoSignalNeeded reports that Yielding never blocks and needs no signal.
+func (Yielding) NoSignalNeeded() bool { return true }
+
+// NoSignalNeeded reports that Sleeping never blocks and needs no signal.
+func (Sleeping) NoSignalNeeded() bool { return true }
