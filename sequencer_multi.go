@@ -20,7 +20,16 @@ type MultiProducerSequencer struct {
 	wait       WaitStrategy
 	signal     bool // strategy parks waiters and needs SignalAll per publish
 	gating     []*Sequence
-	avail      []atomic.Int32
+	avail      []availSlot
+}
+
+// availSlot pads each publication flag to its own cache line: without
+// padding, 16 flags share a line and producers publishing neighboring
+// sequences false-share it on every event (O5; ~10% at 3 producers, at the
+// cost of 64B ring capacity in bookkeeping per slot).
+type availSlot struct {
+	v atomic.Int32
+	_ [60]byte
 }
 
 // NewMultiProducerSequencer creates a sequencer for a power-of-two capacity.
@@ -36,10 +45,10 @@ func NewMultiProducerSequencer(capacity int64, wait WaitStrategy) *MultiProducer
 		shift:      log2(capacity),
 		wait:       wait,
 		signal:     needsSignal(wait),
-		avail:      make([]atomic.Int32, capacity),
+		avail:      make([]availSlot, capacity),
 	}
 	for i := range s.avail {
-		s.avail[i].Store(-1)
+		s.avail[i].v.Store(-1)
 	}
 	return s
 }
@@ -106,7 +115,7 @@ func (s *MultiProducerSequencer) TryNext(n int64) (int64, bool) {
 
 func (s *MultiProducerSequencer) Publish(lo, hi int64) {
 	for seq := lo; seq <= hi; seq++ {
-		storeRelease32(&s.avail[seq&s.mask], int32(seq>>s.shift))
+		storeRelease32(&s.avail[seq&s.mask].v, int32(seq>>s.shift))
 	}
 	if s.signal {
 		s.wait.SignalAll()
@@ -115,7 +124,7 @@ func (s *MultiProducerSequencer) Publish(lo, hi int64) {
 
 func (s *MultiProducerSequencer) HighestPublished(lo, hi int64) int64 {
 	for seq := lo; seq <= hi; seq++ {
-		if s.avail[seq&s.mask].Load() != int32(seq>>s.shift) {
+		if s.avail[seq&s.mask].v.Load() != int32(seq>>s.shift) {
 			return seq - 1
 		}
 	}
