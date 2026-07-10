@@ -238,3 +238,58 @@ SPSC baseline on this box (more on unshared hardware); MPSC at minimum stops
 losing to channels at 4 producers, with the honest possibility that heavily
 contended MPSC remains channel-competitive rather than channel-beating on
 4 shared vCPUs — the batch API (O6) is the designed escape hatch there.
+
+---
+
+## 7. Results (implemented)
+
+All nine optimizations landed as separate commits, each gated by
+measurement; the full verification matrix (`-race`, GOMAXPROCS=1/2,
+10M-event non-race stress on the release-store fast path) is green.
+
+Median-of-3 on the same 4-vCPU box (baseline → after, channel reference):
+
+| Benchmark | Baseline | After | Channel | Outcome |
+|---|---:|---:|---:|---|
+| SPSC 8B    | ~96 ns  | **36 ns**  | 143 | 3.9× vs channel (was ~1.5×) |
+| SPSC 64B   | ~46 ns  | **16 ns**  | 190 | 11.6× |
+| SPSC 256B  | ~42 ns  | **17 ns**  | 335 | 19.6× |
+| SPSC batch=8 (manual) | 4.7 ns | **4.8 ns** | — | ~30× vs per-event channel |
+| MPSC p=1   | ~74 ns  | **22 ns**  | 69  | 3.2× |
+| MPSC p=2   | ~152 ns | **135 ns** | 80  | improved ~25%, still behind |
+| MPSC p=3   | ~330 ns | **~320 ns**| 84  | high variance, ~flat |
+
+Latency (Yielding, idle ring): p50 0.6–2.2µs → **~0.6µs stable**;
+p99 54–113µs → **51–61µs**.
+
+Per-optimization notes:
+
+- **O1 (signal elision), O3 (gate-store avoidance), O8 (barrier
+  specialization)**: individually below the noise floor of this VM but
+  strict instruction/contended-write reductions; kept.
+- **O2 (release stores)** was the decisive win, exactly as the disassembly
+  predicted: SPSC halved (~70–120 → ~35 ns) *and* run-to-run variance
+  collapsed — the XCHG was both the cost and the noise source. MPSC p=1
+  dropped to ~22 ns.
+- **O4 (CAS backoff)**: ~25% at p=2, ~15% at p=3 vs a same-session
+  no-backoff control; PAUSE cap 16 chosen by sweep.
+- **O5 (avail layout)**: padded-64B beat packed-int32 by ~12% at p=3 and
+  int64-spacing was worse than both; padded kept (64B bookkeeping per slot).
+- **O6 (PublishBatch)**: batch=64 ≈ 4.7–4.9 ns/op through either path;
+  the ergonomic closure API costs ~3–4 ns/event at batch=8 vs the manual
+  NextN/Get/PublishRange path (indirect call per event) — both benchmarked.
+- **O7 (spin tuning)**: PAUSE in the spin phase + PAUSE-spaced yields;
+  p50 stabilized, p99 improved 15–50%, throughput flat-to-better.
+
+Remaining honest gap: single-event MPSC at 2–3 producers on 4 shared vCPUs
+still trails channels (the Go runtime's channel semaphore handles brutal
+contention on oversubscribed cores well). The spec anticipated this; the
+designed answer is batch claims, and the sharded-lane idea in §4 remains
+the future direction if per-event contended MPSC becomes a hard
+requirement.
+
+An incidental finding worth keeping: SPSC with 64B/256B events is *faster*
+than 8B events — at 8 bytes, eight ring slots share one cache line, so the
+producer writing slot n+1 false-shares with the consumer reading slot n.
+Users chasing latency should size (or pad) events toward the cache-line
+size; documented here rather than auto-padding, since it trades memory.
