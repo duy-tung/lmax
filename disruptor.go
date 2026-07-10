@@ -197,6 +197,19 @@ func (d *Disruptor[T]) Publish(seq int64) { d.seqr.Publish(seq, seq) }
 // PublishRange releases the claimed slots lo..hi to consumers.
 func (d *Disruptor[T]) PublishRange(lo, hi int64) { d.seqr.Publish(lo, hi) }
 
+// PublishBatch claims n slots, fills each via fill (i is the 0-based index
+// within the batch), and releases them with a single publish — "smart
+// batching": every per-event publication cost is amortized across the batch.
+// fill must not retain the *T.
+func (d *Disruptor[T]) PublishBatch(n int64, fill func(i int64, e *T)) {
+	hi := d.seqr.Next(n)
+	lo := hi - n + 1
+	for seq := lo; seq <= hi; seq++ {
+		fill(seq-lo, d.ring.Get(seq))
+	}
+	d.seqr.Publish(lo, hi)
+}
+
 // Cursor returns the highest published (single producer) or claimed
 // (multi-producer) sequence.
 func (d *Disruptor[T]) Cursor() int64 { return d.seqr.Cursor().Load() }

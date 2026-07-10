@@ -104,40 +104,51 @@ func BenchmarkChannelSPSC(b *testing.B) {
 }
 
 // Batch publication amortizes the per-event publish cost ("smart batching").
+// "manual" uses NextN/Get/PublishRange inline (fastest — no indirect call);
+// "api" uses the ergonomic PublishBatch, which pays one closure call per
+// event.
 func BenchmarkDisruptorSPSCBatch(b *testing.B) {
-	for _, batch := range []int64{8, 64} {
-		b.Run("batch="+itoa(batch), func(b *testing.B) {
-			d, err := lmax.New[event8](lmax.WithCapacity(ringSize))
-			if err != nil {
-				b.Fatal(err)
-			}
-			var sum int64
-			d.HandleWith(lmax.EventHandlerFunc[event8](func(e *event8, seq int64, eob bool) {
-				sum += e.v
-			}))
-			if err := d.Start(); err != nil {
-				b.Fatal(err)
-			}
-			b.ResetTimer()
-			for i := int64(0); i < int64(b.N); i += batch {
-				n := batch
-				if int64(b.N)-i < n {
-					n = int64(b.N) - i
+	run := func(name string, publish func(d *lmax.Disruptor[event8], i, n int64)) {
+		for _, batch := range []int64{8, 64} {
+			b.Run(name+"/batch="+itoa(batch), func(b *testing.B) {
+				d, err := lmax.New[event8](lmax.WithCapacity(ringSize))
+				if err != nil {
+					b.Fatal(err)
 				}
-				hi := d.NextN(n)
-				lo := hi - n + 1
-				for seq := lo; seq <= hi; seq++ {
-					d.Get(seq).v = i + (seq - lo)
+				var sum int64
+				d.HandleWith(lmax.EventHandlerFunc[event8](func(e *event8, seq int64, eob bool) {
+					sum += e.v
+				}))
+				if err := d.Start(); err != nil {
+					b.Fatal(err)
 				}
-				d.PublishRange(lo, hi)
-			}
-			if err := d.Shutdown(context.Background()); err != nil {
-				b.Fatal(err)
-			}
-			b.StopTimer()
-			_ = sum
-		})
+				b.ResetTimer()
+				for i := int64(0); i < int64(b.N); i += batch {
+					n := batch
+					if int64(b.N)-i < n {
+						n = int64(b.N) - i
+					}
+					publish(d, i, n)
+				}
+				if err := d.Shutdown(context.Background()); err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				_ = sum
+			})
+		}
 	}
+	run("manual", func(d *lmax.Disruptor[event8], i, n int64) {
+		hi := d.NextN(n)
+		lo := hi - n + 1
+		for seq := lo; seq <= hi; seq++ {
+			d.Get(seq).v = i + (seq - lo)
+		}
+		d.PublishRange(lo, hi)
+	})
+	run("api", func(d *lmax.Disruptor[event8], i, n int64) {
+		d.PublishBatch(n, func(j int64, e *event8) { e.v = i + j })
+	})
 }
 
 func benchDisruptorMPSC(b *testing.B, producers int) {

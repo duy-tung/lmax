@@ -125,6 +125,44 @@ func TestIntegrationBatchPublish(t *testing.T) {
 	checkHandler(t, "consumer", h, n)
 }
 
+func TestIntegrationPublishBatch(t *testing.T) {
+	const n = 1 << 18
+	const batch = 32
+	d, err := New[testEvent](WithCapacity(1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newCountingHandler()
+	d.HandleWith(h)
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(0); i < n; i += batch {
+		base := i
+		d.PublishBatch(batch, func(j int64, e *testEvent) { e.v = base + j })
+	}
+	shutdown(t, d)
+	checkHandler(t, "consumer", h, n)
+}
+
+func TestPublishBatchZeroAlloc(t *testing.T) {
+	d, err := New[testEvent](WithCapacity(1 << 12))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.HandleWith(EventHandlerFunc[testEvent](func(e *testEvent, seq int64, eob bool) {}))
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	allocs := testing.AllocsPerRun(5_000, func() {
+		d.PublishBatch(8, func(i int64, e *testEvent) { e.v = i })
+	})
+	shutdown(t, d)
+	if allocs != 0 {
+		t.Errorf("PublishBatch allocated %.1f times per op, want 0", allocs)
+	}
+}
+
 func TestIntegrationFanOut(t *testing.T) {
 	// One producer, three independent consumers: each must see every event.
 	const n = 1 << 19
