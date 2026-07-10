@@ -32,6 +32,13 @@ func (s *Sequence) Load() int64 { return s.val.Load() }
 // happened-before it visible to goroutines that observe the new value.
 func (s *Sequence) Store(v int64) { s.val.Store(v) }
 
+// StoreRelease writes the sequence value with release (rather than
+// sequentially consistent) semantics: earlier writes by this goroutine are
+// visible to any goroutine that observes the new value, but the store does
+// not act as a full barrier. This is the publication fast path — see
+// store_release_amd64.go.
+func (s *Sequence) StoreRelease(v int64) { storeRelease64(&s.val, v) }
+
 // CompareAndSwap atomically replaces old with new and reports success.
 func (s *Sequence) CompareAndSwap(old, new int64) bool {
 	return s.val.CompareAndSwap(old, new)

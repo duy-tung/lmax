@@ -99,7 +99,7 @@ func (s *MultiProducerSequencer) TryNext(n int64) (int64, bool) {
 
 func (s *MultiProducerSequencer) Publish(lo, hi int64) {
 	for seq := lo; seq <= hi; seq++ {
-		s.avail[seq&s.mask].Store(int32(seq >> s.shift))
+		storeRelease32(&s.avail[seq&s.mask], int32(seq>>s.shift))
 	}
 	if s.signal {
 		s.wait.SignalAll()

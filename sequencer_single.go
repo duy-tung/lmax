@@ -79,7 +79,7 @@ func (s *SingleProducerSequencer) TryNext(n int64) (int64, bool) {
 // Publish releases slots up to hi with a single cursor store; the atomic
 // store is the release edge that makes the slot writes visible to consumers.
 func (s *SingleProducerSequencer) Publish(lo, hi int64) {
-	s.cursor.Store(hi)
+	s.cursor.StoreRelease(hi)
 	if s.signal {
 		s.wait.SignalAll()
 	}

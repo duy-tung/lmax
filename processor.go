@@ -45,6 +45,6 @@ func (p *EventProcessor[T]) run() {
 		for ; next <= avail; next++ {
 			p.handler.OnEvent(p.ring.Get(next), next, next == avail)
 		}
-		p.seq.Store(avail)
+		p.seq.StoreRelease(avail)
 	}
 }
