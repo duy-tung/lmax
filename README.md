@@ -84,9 +84,11 @@ On amd64, publication uses a hand-written assembly release store (a plain
 `MOV`, relying on x86-TSO ordering plus the non-inlinable call boundary) —
 deliberately outside the letter of the Go memory model, validated by the
 race suite (which swaps in `sync/atomic`) and 10M-event non-race stress
-runs. Build with `-tags purego` to force `sync/atomic` publication
-everywhere and stay strictly within the formal memory model, at roughly
-half the SPSC throughput.
+runs. Build with `-tags purego` to exclude all assembly and stay strictly
+within the formal memory model: publication reverts to `sync/atomic`
+(roughly half the SPSC throughput) and PAUSE-based spin/CAS backoff
+becomes a no-op (untuned behavior under producer contention). Both build
+configurations are tested in CI.
 
 Indicative numbers from a shared 4-vCPU cloud VM (Xeon @ 2.80GHz, Go 1.24,
 median of 3 — run your own on real hardware; isolated cores change the

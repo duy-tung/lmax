@@ -10,12 +10,16 @@ import "sync/atomic"
 // store_release_amd64.{go,s}. arm64 could use STLR the same way but ships on
 // this fallback until CI can prove the assembly on real hardware.
 //
-// The `purego` build tag opts amd64 out of the assembly fast path too. The
-// fast path's guarantee rests on x86-TSO hardware ordering plus the
-// non-inlinable call boundary — deliberately outside the letter of the Go
-// memory model, which grants synchronized-before edges to sync/atomic
-// operations specifically. Users who require formal memory-model compliance
-// over the last ~2x of SPSC throughput should build with -tags purego.
+// The `purego` build tag opts amd64 out of ALL assembly in this package:
+// the release stores fall back to sync/atomic, and procYield below becomes
+// a no-op — so PAUSE-based spin backoff (consumer wait loops, multi-producer
+// CAS backoff) is also lost, reverting those paths to immediate-retry
+// behavior. The fast path's guarantee rests on x86-TSO hardware ordering
+// plus the non-inlinable call boundary — deliberately outside the letter of
+// the Go memory model, which grants synchronized-before edges to
+// sync/atomic operations specifically. Users who require formal
+// memory-model compliance (and accept both costs — roughly half the SPSC
+// throughput, plus untuned contention behavior) should build -tags purego.
 func storeRelease64(a *atomic.Int64, v int64) { a.Store(v) }
 
 func storeRelease32(a *atomic.Int32, v int32) { a.Store(v) }
