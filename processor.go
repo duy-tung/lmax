@@ -15,6 +15,14 @@ type EventHandlerFunc[T any] func(e *T, seq int64, endOfBatch bool)
 
 func (f EventHandlerFunc[T]) OnEvent(e *T, seq int64, endOfBatch bool) { f(e, seq, endOfBatch) }
 
+// PanicHandler is called when an EventHandler panics, with the recovered
+// value and the sequence being processed. After it returns, the event is
+// treated as handled and the processor continues with the next sequence —
+// the sequence cannot be retried or skipped-and-parked, because consumer
+// progress is a single monotonic counter. Without a PanicHandler
+// (the default), handler panics propagate and crash the process.
+type PanicHandler func(recovered any, seq int64)
+
 // EventProcessor is one consumer: a goroutine running the canonical batch
 // loop over the ring, gated by its barrier.
 type EventProcessor[T any] struct {
@@ -24,13 +32,25 @@ type EventProcessor[T any] struct {
 	seq     *Sequence
 	wait    WaitStrategy
 	signal  bool // strategy parks waiters: signal after each progress store
+	panicH  PanicHandler
 }
 
-func newEventProcessor[T any](ring *RingBuffer[T], barrier *SequenceBarrier, handler EventHandler[T], wait WaitStrategy) *EventProcessor[T] {
+func newEventProcessor[T any](ring *RingBuffer[T], barrier *SequenceBarrier, handler EventHandler[T], wait WaitStrategy, panicH PanicHandler) *EventProcessor[T] {
 	return &EventProcessor[T]{
 		ring: ring, barrier: barrier, handler: handler, seq: NewSequence(),
-		wait: wait, signal: needsSignal(wait),
+		wait: wait, signal: needsSignal(wait), panicH: panicH,
 	}
+}
+
+// dispatchRecover wraps one OnEvent call in a recover; only used when a
+// PanicHandler is configured, so the defer cost stays off the default path.
+func (p *EventProcessor[T]) dispatchRecover(e *T, seq int64, endOfBatch bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.panicH(r, seq)
+		}
+	}()
+	p.handler.OnEvent(e, seq, endOfBatch)
 }
 
 // Sequence exposes this consumer's progress, for gating and dependency edges.
@@ -53,8 +73,14 @@ func (p *EventProcessor[T]) run() {
 		if err != nil {
 			return
 		}
-		for ; next <= avail; next++ {
-			p.handler.OnEvent(p.ring.Get(next), next, next == avail)
+		if p.panicH == nil {
+			for ; next <= avail; next++ {
+				p.handler.OnEvent(p.ring.Get(next), next, next == avail)
+			}
+		} else {
+			for ; next <= avail; next++ {
+				p.dispatchRecover(p.ring.Get(next), next, next == avail)
+			}
 		}
 		p.seq.StoreRelease(avail)
 		// Downstream consumers gate on THIS sequence, not the producer

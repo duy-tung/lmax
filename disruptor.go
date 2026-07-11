@@ -16,6 +16,7 @@ type config struct {
 	capacity int64
 	multi    bool
 	wait     WaitStrategy
+	panicH   PanicHandler
 }
 
 // Option configures a Disruptor at construction time.
@@ -37,6 +38,10 @@ func WithMultiProducer() Option { return func(c *config) { c.multi = true } }
 // Yielding. A *Blocking strategy must be shared, so pass a pointer.
 func WithWaitStrategy(ws WaitStrategy) Option { return func(c *config) { c.wait = ws } }
 
+// WithPanicHandler installs a hook for handler panics; see PanicHandler.
+// Without it (the default), a handler panic crashes the process.
+func WithPanicHandler(h PanicHandler) Option { return func(c *config) { c.panicH = h } }
+
 // Disruptor wires a ring buffer, a sequencer, and a DAG of event processors,
 // and owns their lifecycle.
 //
@@ -48,9 +53,10 @@ func WithWaitStrategy(ws WaitStrategy) Option { return func(c *config) { c.wait 
 // goroutine. The state machine catches misordered lifecycle calls, but the
 // internal graph structures are deliberately unsynchronized.
 type Disruptor[T any] struct {
-	ring *RingBuffer[T]
-	seqr Sequencer
-	wait WaitStrategy
+	ring   *RingBuffer[T]
+	seqr   Sequencer
+	wait   WaitStrategy
+	panicH PanicHandler
 
 	procs   []*EventProcessor[T]
 	depSeqs map[*Sequence]bool // sequences used as a dependency of some group
@@ -87,6 +93,7 @@ func New[T any](opts ...Option) (*Disruptor[T], error) {
 		ring:    NewRingBuffer[T](cfg.capacity),
 		seqr:    seqr,
 		wait:    cfg.wait,
+		panicH:  cfg.panicH,
 		depSeqs: make(map[*Sequence]bool),
 	}, nil
 }
@@ -148,7 +155,7 @@ func (d *Disruptor[T]) handleWith(deps []*Sequence, handlers []EventHandler[T]) 
 		if h == nil {
 			panic("lmax: nil EventHandler")
 		}
-		p := newEventProcessor(d.ring, newSequenceBarrier(d.seqr, d.wait, deps), h, d.wait)
+		p := newEventProcessor(d.ring, newSequenceBarrier(d.seqr, d.wait, deps), h, d.wait, d.panicH)
 		d.procs = append(d.procs, p)
 		g.seqs = append(g.seqs, p.Sequence())
 	}

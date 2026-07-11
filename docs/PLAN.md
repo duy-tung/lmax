@@ -450,9 +450,14 @@ from the text above, kept here so this document stops lying:
   (fallback store path), non-race suite + 10M-event stress (assembly store
   path), and a benchmark smoke run.
 - **Examples exist**: examples/fanout, examples/pipeline.
-- **Still open from M6**: fuzz tests, goleak-based leak assertions (shutdown
-  join is currently asserted via WaitGroup + drain checks), arm64 CI, and
-  the panic-handler hook (stretch).
+- **M6 gaps closed post-review**: a native Go fuzz target
+  (FuzzDisruptorRoundTrip: fuzzed capacity/count/batch/producer-mode with
+  loss/dup/order/dependency invariants; seed corpus runs on every test),
+  a dependency-free goroutine-leak regression test (50 start/shutdown
+  cycles), arm64 CI (ubuntu-24.04-arm runner exercising the sync/atomic
+  fallback on real ARM hardware), and WithPanicHandler (recovered value +
+  sequence; the event is treated as handled — progress is one monotonic
+  counter, so retry/park is impossible by construction).
 - **Shutdown caveats are documented on the method**: a ctx error does not
   guarantee processor goroutines exited (alerts cannot interrupt a blocked
   handler), and in multi-producer mode a claimed-but-never-published slot

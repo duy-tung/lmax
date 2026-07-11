@@ -577,6 +577,47 @@ func TestNextNExceedingCapacityPanics(t *testing.T) {
 	}
 }
 
+func TestPanicHandlerRecovers(t *testing.T) {
+	const n = 1000
+	var panicked []int64
+	var recovered []any
+	d, err := New[testEvent](
+		WithCapacity(64),
+		WithPanicHandler(func(r any, seq int64) {
+			recovered = append(recovered, r)
+			panicked = append(panicked, seq)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newCountingHandler()
+	d.HandleWith(EventHandlerFunc[testEvent](func(e *testEvent, seq int64, eob bool) {
+		if seq == 5 || seq == 500 {
+			panic("boom")
+		}
+		h.OnEvent(e, seq, eob)
+	}))
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	publishSequential(d, n)
+	shutdown(t, d)
+	// The two panicking events are consumed-but-not-counted; all others
+	// processed, and the disruptor drained and shut down cleanly.
+	if h.count != n-2 {
+		t.Errorf("count = %d, want %d", h.count, n-2)
+	}
+	if len(panicked) != 2 || panicked[0] != 5 || panicked[1] != 500 {
+		t.Errorf("panic handler saw sequences %v, want [5 500]", panicked)
+	}
+	for _, r := range recovered {
+		if r != "boom" {
+			t.Errorf("recovered value = %v, want boom", r)
+		}
+	}
+}
+
 func TestZeroAllocationHotPath(t *testing.T) {
 	d, err := New[testEvent](WithCapacity(1 << 12))
 	if err != nil {
