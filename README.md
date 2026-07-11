@@ -78,6 +78,16 @@ go test -race ./...           # unit + integration (SPSC, fan-out, pipeline,
 go test -bench=. -benchmem ./bench
 ```
 
+## Build tags
+
+On amd64, publication uses a hand-written assembly release store (a plain
+`MOV`, relying on x86-TSO ordering plus the non-inlinable call boundary) —
+deliberately outside the letter of the Go memory model, validated by the
+race suite (which swaps in `sync/atomic`) and 10M-event non-race stress
+runs. Build with `-tags purego` to force `sync/atomic` publication
+everywhere and stay strictly within the formal memory model, at roughly
+half the SPSC throughput.
+
 Indicative numbers from a shared 4-vCPU cloud VM (Xeon @ 2.80GHz, Go 1.24,
 median of 3 — run your own on real hardware; isolated cores change the
 picture substantially). After the profile-driven optimization pass

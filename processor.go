@@ -40,6 +40,12 @@ func (p *EventProcessor[T]) Sequence() *Sequence { return p.seq }
 // batch, not per event — when a consumer falls behind it catches up with a
 // single release store per batch instead of ping-ponging cache lines per
 // element.
+//
+// Pipeline consequence: a downstream stage cannot start sequence s until
+// this stage's WHOLE current batch containing s is done (if this stage
+// picks up 0..63 at once, downstream sees nothing until 63 completes).
+// That trades per-event pipeline latency for throughput; batches only grow
+// large when this stage is behind, where throughput is what clears them.
 func (p *EventProcessor[T]) run() {
 	next := p.seq.Load() + 1
 	for {

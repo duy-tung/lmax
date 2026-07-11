@@ -42,6 +42,11 @@ func WithWaitStrategy(ws WaitStrategy) Option { return func(c *config) { c.wait 
 //
 // Build the consumer graph with HandleWith/After before Start; publish with
 // Next/Get/Publish (claim a slot, fill it in place, release it).
+//
+// Graph construction (HandleWith/After/Then) and Start are NOT goroutine-
+// safe with respect to each other — wire the graph and call Start from one
+// goroutine. The state machine catches misordered lifecycle calls, but the
+// internal graph structures are deliberately unsynchronized.
 type Disruptor[T any] struct {
 	ring *RingBuffer[T]
 	seqr Sequencer
@@ -271,6 +276,9 @@ func (d *Disruptor[T]) Cursor() int64 { return d.seqr.Cursor().Load() }
 //   - In multi-producer mode the drain target is the highest *claimed*
 //     sequence, so a producer that claimed a slot but never published it
 //     (bug, panic, early return) makes Shutdown wait until ctx expires.
+//     In single-producer mode the cursor only reflects published events, so
+//     a claimed-but-unpublished slot is silently excluded from the drain —
+//     the event is lost, not waited for.
 func (d *Disruptor[T]) Shutdown(ctx context.Context) error {
 	if !d.state.CompareAndSwap(stateStarted, stateStopped) {
 		if d.state.Load() == stateNew {
