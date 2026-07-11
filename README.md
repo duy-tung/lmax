@@ -54,9 +54,21 @@ if err := d.Shutdown(ctx); err != nil { ... }
 
 For concurrent publishers add `lmax.WithMultiProducer()`.
 
-**Contract:** the `*T` returned by `Get` (and passed to handlers) points into
-the ring; do not retain it past `Publish` (producer) or past your handler
-returning (consumer).
+**Contract:** this is a low-level, correctness-by-contract API.
+
+- The `*T` returned by `Get` (and passed to handlers) points into the ring;
+  do not retain it past `Publish` (producer) or past your handler returning
+  (consumer). Slots are not zeroed between laps — overwrite every field the
+  consumers read.
+- Publish exactly the range you claimed, in the claim/fill/publish order
+  shown above. Misuse the library can detect panics: claiming after
+  `Shutdown`, or `NextN`/`PublishBatch` with `n` outside `1..capacity`.
+- Handlers in the same fan-out stage run concurrently over the same `*T`:
+  concurrent reads are fine, but stages that mutate for a later stage must
+  be ordered with `After`/`Then`.
+- `Shutdown` requires producers to have stopped first; a context error means
+  the drain/join did not finish (a handler blocked in `OnEvent` cannot be
+  interrupted).
 
 ## Testing
 

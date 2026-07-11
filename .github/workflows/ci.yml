@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: vet
+        run: go vet ./...
+      - name: tests (race, fallback store path)
+        run: go test -race ./...
+      - name: tests (non-race, exercises the amd64 release-store fast path)
+        run: go test ./...
+      - name: stress (release-store fast path, 10M+ events)
+        run: go test -run TestStress -count=2 .
+      - name: benchmarks compile and run briefly
+        run: go test -bench=. -benchtime=100x ./bench

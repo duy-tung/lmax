@@ -469,6 +469,74 @@ func TestLifecycleErrors(t *testing.T) {
 	}
 }
 
+func TestPublishAfterShutdownPanics(t *testing.T) {
+	d, err := New[testEvent](WithCapacity(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.HandleWith(newCountingHandler())
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	seq := d.Next()
+	d.Publish(seq)
+	shutdown(t, d)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Next after Shutdown should panic")
+		}
+	}()
+	d.Next()
+}
+
+func TestStartRecoverableAfterNoHandlers(t *testing.T) {
+	d, err := New[testEvent](WithCapacity(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Start(); err == nil {
+		t.Fatal("Start with no handlers should fail")
+	}
+	// A failed Start must leave the disruptor usable.
+	h := newCountingHandler()
+	d.HandleWith(h)
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start after adding handlers: %v", err)
+	}
+	seq := d.Next()
+	d.Get(seq).v = 7
+	d.Publish(seq)
+	shutdown(t, d)
+	if h.count != 1 || h.sum != 7 {
+		t.Errorf("consumer saw count=%d sum=%d, want 1/7", h.count, h.sum)
+	}
+}
+
+func TestNextNExceedingCapacityPanics(t *testing.T) {
+	for name, opts := range map[string][]Option{
+		"single": {WithCapacity(8)},
+		"multi":  {WithCapacity(8), WithMultiProducer()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, err := New[testEvent](opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d.HandleWith(newCountingHandler())
+			if err := d.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer shutdown(t, d)
+			defer func() {
+				if recover() == nil {
+					t.Error("NextN(capacity+1) should panic instead of spinning forever")
+				}
+			}()
+			d.NextN(9)
+		})
+	}
+}
+
 func TestZeroAllocationHotPath(t *testing.T) {
 	d, err := New[testEvent](WithCapacity(1 << 12))
 	if err != nil {

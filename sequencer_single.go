@@ -40,8 +40,8 @@ func (s *SingleProducerSequencer) AddGating(seqs ...*Sequence) {
 }
 
 func (s *SingleProducerSequencer) Next(n int64) int64 {
-	if n < 1 {
-		panic("lmax: Next requires n >= 1")
+	if n < 1 || n > s.capacity {
+		panic("lmax: Next requires 1 <= n <= capacity")
 	}
 	next := s.next + n
 	wrap := next - s.capacity
@@ -60,8 +60,8 @@ func (s *SingleProducerSequencer) Next(n int64) int64 {
 }
 
 func (s *SingleProducerSequencer) TryNext(n int64) (int64, bool) {
-	if n < 1 {
-		panic("lmax: TryNext requires n >= 1")
+	if n < 1 || n > s.capacity {
+		panic("lmax: TryNext requires 1 <= n <= capacity")
 	}
 	next := s.next + n
 	wrap := next - s.capacity

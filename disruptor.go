@@ -151,11 +151,13 @@ func (d *Disruptor[T]) handleWith(deps []*Sequence, handlers []EventHandler[T]) 
 // Start validates the graph, gates the producer on the leaf consumers, and
 // spawns one goroutine per handler.
 func (d *Disruptor[T]) Start() error {
-	if d.started.Swap(true) {
-		return errors.New("lmax: Start called twice")
-	}
+	// Validate before marking started so a failed Start leaves the
+	// disruptor usable: the caller can add handlers and try again.
 	if len(d.procs) == 0 {
 		return errors.New("lmax: no handlers registered")
+	}
+	if d.started.Swap(true) {
+		return errors.New("lmax: Start called twice")
 	}
 	// The producer only needs to gate on the leaves: every non-leaf is
 	// bounded from above by its downstream consumers.
@@ -178,14 +180,35 @@ func (d *Disruptor[T]) Start() error {
 
 // Next claims one slot, spinning while the ring is full, and returns its
 // sequence. Fill the slot via Get, then release it with Publish.
-func (d *Disruptor[T]) Next() int64 { return d.seqr.Next(1) }
+// Claiming after Shutdown panics: it is a programming error, like sending
+// on a closed channel.
+func (d *Disruptor[T]) Next() int64 {
+	d.checkPublishable()
+	return d.seqr.Next(1)
+}
 
-// NextN claims n slots and returns the highest sequence; the caller owns
-// hi-n+1 .. hi and must PublishRange the same range.
-func (d *Disruptor[T]) NextN(n int64) int64 { return d.seqr.Next(n) }
+// NextN claims n slots (1 <= n <= capacity) and returns the highest
+// sequence; the caller owns hi-n+1 .. hi and must PublishRange the same
+// range. Claiming after Shutdown panics.
+func (d *Disruptor[T]) NextN(n int64) int64 {
+	d.checkPublishable()
+	return d.seqr.Next(n)
+}
 
 // TryNext claims one slot without blocking; ok is false if the ring is full.
-func (d *Disruptor[T]) TryNext() (int64, bool) { return d.seqr.TryNext(1) }
+// Claiming after Shutdown panics.
+func (d *Disruptor[T]) TryNext() (int64, bool) {
+	d.checkPublishable()
+	return d.seqr.TryNext(1)
+}
+
+// checkPublishable costs one uncontended atomic load on the claim path: the
+// stopped flag is written once, so its cache line stays Shared across cores.
+func (d *Disruptor[T]) checkPublishable() {
+	if d.stopped.Load() {
+		panic("lmax: publish after Shutdown")
+	}
+}
 
 // Get returns a pointer to the slot for seq, valid per the RingBuffer
 // contract.
@@ -200,9 +223,9 @@ func (d *Disruptor[T]) PublishRange(lo, hi int64) { d.seqr.Publish(lo, hi) }
 // PublishBatch claims n slots, fills each via fill (i is the 0-based index
 // within the batch), and releases them with a single publish — "smart
 // batching": every per-event publication cost is amortized across the batch.
-// fill must not retain the *T.
+// fill must not retain the *T. Claiming after Shutdown panics.
 func (d *Disruptor[T]) PublishBatch(n int64, fill func(i int64, e *T)) {
-	hi := d.seqr.Next(n)
+	hi := d.NextN(n)
 	lo := hi - n + 1
 	for seq := lo; seq <= hi; seq++ {
 		fill(seq-lo, d.ring.Get(seq))
@@ -218,6 +241,15 @@ func (d *Disruptor[T]) Cursor() int64 { return d.seqr.Cursor().Load() }
 // have stopped publishing first. It waits — bounded by ctx — until every
 // consumer has processed everything published, then alerts the barriers and
 // joins the goroutines.
+//
+// Two caveats callers must understand:
+//
+//   - A ctx error means the drain or join did NOT complete: alerts only
+//     interrupt barrier waits, so a handler blocked inside OnEvent keeps its
+//     goroutine alive past Shutdown returning (goroutines cannot be killed).
+//   - In multi-producer mode the drain target is the highest *claimed*
+//     sequence, so a producer that claimed a slot but never published it
+//     (bug, panic, early return) makes Shutdown wait until ctx expires.
 func (d *Disruptor[T]) Shutdown(ctx context.Context) error {
 	if !d.started.Load() {
 		return errors.New("lmax: Shutdown before Start")

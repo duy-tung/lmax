@@ -76,8 +76,8 @@ func (s *MultiProducerSequencer) hasCapacity(n, current int64) bool {
 }
 
 func (s *MultiProducerSequencer) Next(n int64) int64 {
-	if n < 1 {
-		panic("lmax: Next requires n >= 1")
+	if n < 1 || n > s.capacity {
+		panic("lmax: Next requires 1 <= n <= capacity")
 	}
 	backoff := int32(1)
 	for {
@@ -99,8 +99,8 @@ func (s *MultiProducerSequencer) Next(n int64) int64 {
 }
 
 func (s *MultiProducerSequencer) TryNext(n int64) (int64, bool) {
-	if n < 1 {
-		panic("lmax: TryNext requires n >= 1")
+	if n < 1 || n > s.capacity {
+		panic("lmax: TryNext requires 1 <= n <= capacity")
 	}
 	for {
 		current := s.cursor.Load()

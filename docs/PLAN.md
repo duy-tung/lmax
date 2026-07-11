@@ -425,3 +425,35 @@ behind a build tag if benchmarks justify it.
 | In-place slot access is an unsafe-by-contract API | Loud docs, race-detector tests, optional copying convenience API (`Consume(func(T))`) for safety-first users |
 | Multi-producer availableBuffer complexity | Land it last (M5), after SPSC/graph paths are proven; port the Java algorithm faithfully with its tests |
 | False-sharing pads bloat structs | Only `Sequence` and sequencer hot fields are padded; measured with layout tests |
+
+---
+
+## 11. Status vs. Plan (updated after implementation + review)
+
+Implemented: M0–M5 in full, plus the profile-driven optimization pass
+(docs/OPTIMIZATION.md) and a post-review hardening pass. Known deviations
+from the text above, kept here so this document stops lying:
+
+- **"No `unsafe` in v1" is superseded.** The O2 optimization introduced an
+  amd64 assembly release-store fast path (with `unsafe.Pointer` casts),
+  gated behind `!race` build tags; race builds and all other architectures
+  use `sync/atomic` exactly as §6 describes. Rationale, disassembly
+  evidence, and measurements live in docs/OPTIMIZATION.md.
+- **Lifecycle enforcement (§5.8) is now implemented as specified**:
+  claiming after Shutdown panics; `NextN`/`TryNext` validate
+  `1 <= n <= capacity`; a failed `Start` (no handlers) leaves the instance
+  usable so handlers can be added and `Start` retried.
+- **`TryNextN` was not shipped** — `TryNext` (single slot), `NextN`, and
+  `PublishBatch` cover the measured use cases; a claim-up-to-N API remains
+  future work if a real consumer needs it.
+- **CI exists** (.github/workflows/ci.yml): gofmt, vet, race suite
+  (fallback store path), non-race suite + 10M-event stress (assembly store
+  path), and a benchmark smoke run.
+- **Examples exist**: examples/fanout, examples/pipeline.
+- **Still open from M6**: fuzz tests, goleak-based leak assertions (shutdown
+  join is currently asserted via WaitGroup + drain checks), arm64 CI, and
+  the panic-handler hook (stretch).
+- **Shutdown caveats are documented on the method**: a ctx error does not
+  guarantee processor goroutines exited (alerts cannot interrupt a blocked
+  handler), and in multi-producer mode a claimed-but-never-published slot
+  stalls the drain until ctx expires.
