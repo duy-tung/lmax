@@ -370,6 +370,12 @@ func TestIntegrationMultiProducerFanOutTinyRing(t *testing.T) {
 }
 
 func TestIntegrationWaitStrategies(t *testing.T) {
+	// Every strategy runs a two-stage pipeline, not just a root consumer:
+	// the dependent stage gates on the upstream consumer's sequence, which
+	// is exactly where a parking strategy can lose its wake-up (the producer
+	// signals publication, but only the upstream consumer's progress makes
+	// the dependent stage runnable). A lost wake-up shows up here as a
+	// Shutdown timeout.
 	const n = 100_000
 	for name, ws := range map[string]func() WaitStrategy{
 		"BusySpin": func() WaitStrategy { return BusySpin{} },
@@ -382,14 +388,26 @@ func TestIntegrationWaitStrategies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			stage1 := d.HandleWith(EventHandlerFunc[testEvent](func(e *testEvent, seq int64, eob bool) {
+				e.stage1 = e.v + 1
+			}))
+			violations := 0
 			h := newCountingHandler()
-			d.HandleWith(h)
+			d.After(stage1).HandleWith(EventHandlerFunc[testEvent](func(e *testEvent, seq int64, eob bool) {
+				if e.stage1 != e.v+1 {
+					violations++
+				}
+				h.OnEvent(e, seq, eob)
+			}))
 			if err := d.Start(); err != nil {
 				t.Fatal(err)
 			}
 			publishSequential(d, n)
 			shutdown(t, d)
 			checkHandler(t, name, h, n)
+			if violations != 0 {
+				t.Errorf("dependent stage ran before upstream on %d events", violations)
+			}
 		})
 	}
 }
@@ -470,6 +488,15 @@ func TestLifecycleErrors(t *testing.T) {
 }
 
 func TestPublishAfterShutdownPanics(t *testing.T) {
+	mustPanic := func(t *testing.T, what string, f func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s after Shutdown should panic", what)
+			}
+		}()
+		f()
+	}
 	d, err := New[testEvent](WithCapacity(8))
 	if err != nil {
 		t.Fatal(err)
@@ -481,9 +508,22 @@ func TestPublishAfterShutdownPanics(t *testing.T) {
 	seq := d.Next()
 	d.Publish(seq)
 	shutdown(t, d)
+	mustPanic(t, "Next", func() { d.Next() })
+	mustPanic(t, "Publish", func() { d.Publish(seq) })
+	mustPanic(t, "PublishRange", func() { d.PublishRange(seq, seq) })
+}
+
+func TestClaimBeforeStartPanics(t *testing.T) {
+	// Producer gating is only installed by Start; a claim before Start
+	// could silently lap the ring, so it must panic instead.
+	d, err := New[testEvent](WithCapacity(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.HandleWith(newCountingHandler())
 	defer func() {
 		if recover() == nil {
-			t.Fatal("Next after Shutdown should panic")
+			t.Fatal("Next before Start should panic")
 		}
 	}()
 	d.Next()

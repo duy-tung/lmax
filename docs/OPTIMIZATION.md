@@ -1,7 +1,7 @@
 # Optimization Plan & Spec — Profile-Driven
 
-Status: **planned** (this document is the spec; implementation follows in
-ranked order). Baseline commit: `9c4dd29`.
+Status: **implemented** — §7 records the measured results; §§1–6 are the
+original spec, kept verbatim. Baseline commit: `9c4dd29`.
 
 ## 1. Baseline
 

@@ -97,11 +97,11 @@ Core ideas, mapped from the deck:
 
 ```
 github.com/duy-tung/lmax
-├── go.mod                       (module github.com/duy-tung/lmax, go 1.22+)
+├── go.mod                       (module github.com/duy-tung/lmax, go 1.24)
 ├── docs/
 │   └── PLAN.md                  (this document)
 ├── sequence.go                  Sequence: padded atomic int64
-├── cursored.go                  small interfaces: Cursored, Barrier
+├── sequencer.go                 Sequencer interface
 ├── ringbuffer.go                RingBuffer[T]
 ├── sequencer_single.go          SingleProducerSequencer
 ├── sequencer_multi.go           MultiProducerSequencer

@@ -50,10 +50,15 @@ type Disruptor[T any] struct {
 	procs   []*EventProcessor[T]
 	depSeqs map[*Sequence]bool // sequences used as a dependency of some group
 
-	started atomic.Bool
-	stopped atomic.Bool
-	wg      sync.WaitGroup
+	state atomic.Int32 // stateNew → stateStarted → stateStopped
+	wg    sync.WaitGroup
 }
+
+const (
+	stateNew int32 = iota
+	stateStarted
+	stateStopped
+)
 
 // New creates a Disruptor for events of type T.
 func New[T any](opts ...Option) (*Disruptor[T], error) {
@@ -127,7 +132,7 @@ func (a *After[T]) HandleWith(handlers ...EventHandler[T]) *HandlerGroup[T] {
 }
 
 func (d *Disruptor[T]) handleWith(deps []*Sequence, handlers []EventHandler[T]) *HandlerGroup[T] {
-	if d.started.Load() {
+	if d.state.Load() != stateNew {
 		panic("lmax: cannot add handlers after Start")
 	}
 	if len(handlers) == 0 {
@@ -138,7 +143,7 @@ func (d *Disruptor[T]) handleWith(deps []*Sequence, handlers []EventHandler[T]) 
 		if h == nil {
 			panic("lmax: nil EventHandler")
 		}
-		p := newEventProcessor(d.ring, newSequenceBarrier(d.seqr, d.wait, deps), h)
+		p := newEventProcessor(d.ring, newSequenceBarrier(d.seqr, d.wait, deps), h, d.wait)
 		d.procs = append(d.procs, p)
 		g.seqs = append(g.seqs, p.Sequence())
 	}
@@ -156,7 +161,7 @@ func (d *Disruptor[T]) Start() error {
 	if len(d.procs) == 0 {
 		return errors.New("lmax: no handlers registered")
 	}
-	if d.started.Swap(true) {
+	if !d.state.CompareAndSwap(stateNew, stateStarted) {
 		return errors.New("lmax: Start called twice")
 	}
 	// The producer only needs to gate on the leaves: every non-leaf is
@@ -202,10 +207,16 @@ func (d *Disruptor[T]) TryNext() (int64, bool) {
 	return d.seqr.TryNext(1)
 }
 
-// checkPublishable costs one uncontended atomic load on the claim path: the
-// stopped flag is written once, so its cache line stays Shared across cores.
+// checkPublishable costs one uncontended atomic load on the claim/publish
+// path: the state is written twice in the disruptor's lifetime, so its cache
+// line stays Shared across cores. Before Start there is no gating, so a
+// claim could silently lap the ring; after Shutdown the drain has begun.
+// Both are programming errors, like sending on a closed channel.
 func (d *Disruptor[T]) checkPublishable() {
-	if d.stopped.Load() {
+	if s := d.state.Load(); s != stateStarted {
+		if s == stateNew {
+			panic("lmax: publish before Start")
+		}
 		panic("lmax: publish after Shutdown")
 	}
 }
@@ -214,16 +225,26 @@ func (d *Disruptor[T]) checkPublishable() {
 // contract.
 func (d *Disruptor[T]) Get(seq int64) *T { return d.ring.Get(seq) }
 
-// Publish releases a single claimed slot to consumers.
-func (d *Disruptor[T]) Publish(seq int64) { d.seqr.Publish(seq, seq) }
+// Publish releases a single claimed slot to consumers. Publishing when not
+// started panics.
+func (d *Disruptor[T]) Publish(seq int64) {
+	d.checkPublishable()
+	d.seqr.Publish(seq, seq)
+}
 
-// PublishRange releases the claimed slots lo..hi to consumers.
-func (d *Disruptor[T]) PublishRange(lo, hi int64) { d.seqr.Publish(lo, hi) }
+// PublishRange releases the claimed slots lo..hi to consumers. Publishing
+// when not started panics.
+func (d *Disruptor[T]) PublishRange(lo, hi int64) {
+	d.checkPublishable()
+	d.seqr.Publish(lo, hi)
+}
 
 // PublishBatch claims n slots, fills each via fill (i is the 0-based index
-// within the batch), and releases them with a single publish — "smart
-// batching": every per-event publication cost is amortized across the batch.
-// fill must not retain the *T. Claiming after Shutdown panics.
+// within the batch), and releases them with one Publish call — "smart
+// batching": the claim and (in single-producer mode) the cursor store are
+// amortized across the batch. In multi-producer mode publication still
+// marks one availability slot per event; only the claim CAS and signal are
+// amortized. fill must not retain the *T. Panics when not started.
 func (d *Disruptor[T]) PublishBatch(n int64, fill func(i int64, e *T)) {
 	hi := d.NextN(n)
 	lo := hi - n + 1
@@ -251,10 +272,10 @@ func (d *Disruptor[T]) Cursor() int64 { return d.seqr.Cursor().Load() }
 //     sequence, so a producer that claimed a slot but never published it
 //     (bug, panic, early return) makes Shutdown wait until ctx expires.
 func (d *Disruptor[T]) Shutdown(ctx context.Context) error {
-	if !d.started.Load() {
-		return errors.New("lmax: Shutdown before Start")
-	}
-	if d.stopped.Swap(true) {
+	if !d.state.CompareAndSwap(stateStarted, stateStopped) {
+		if d.state.Load() == stateNew {
+			return errors.New("lmax: Shutdown before Start")
+		}
 		return errors.New("lmax: Shutdown called twice")
 	}
 	for !d.drained() {

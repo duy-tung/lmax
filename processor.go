@@ -22,10 +22,15 @@ type EventProcessor[T any] struct {
 	barrier *SequenceBarrier
 	handler EventHandler[T]
 	seq     *Sequence
+	wait    WaitStrategy
+	signal  bool // strategy parks waiters: signal after each progress store
 }
 
-func newEventProcessor[T any](ring *RingBuffer[T], barrier *SequenceBarrier, handler EventHandler[T]) *EventProcessor[T] {
-	return &EventProcessor[T]{ring: ring, barrier: barrier, handler: handler, seq: NewSequence()}
+func newEventProcessor[T any](ring *RingBuffer[T], barrier *SequenceBarrier, handler EventHandler[T], wait WaitStrategy) *EventProcessor[T] {
+	return &EventProcessor[T]{
+		ring: ring, barrier: barrier, handler: handler, seq: NewSequence(),
+		wait: wait, signal: needsSignal(wait),
+	}
 }
 
 // Sequence exposes this consumer's progress, for gating and dependency edges.
@@ -46,5 +51,13 @@ func (p *EventProcessor[T]) run() {
 			p.handler.OnEvent(p.ring.Get(next), next, next == avail)
 		}
 		p.seq.StoreRelease(avail)
+		// Downstream consumers gate on THIS sequence, not the producer
+		// cursor. With a parking strategy they may have woken on the
+		// producer's signal, seen this sequence still behind, and parked
+		// again — without a signal here they would sleep forever if no
+		// further event arrives (lost wake-up on the last batch).
+		if p.signal {
+			p.wait.SignalAll()
+		}
 	}
 }
